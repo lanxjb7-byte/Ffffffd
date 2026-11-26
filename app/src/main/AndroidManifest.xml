@@ -7,6 +7,7 @@
     <queries>
         <package android:name="com.dts.freefireth" />
         <package android:name="com.dts.freefiremax" />
+        <package android:name="moe.shizuku.privileged.api" />
     </queries>
 
     <application 
@@ -21,5 +22,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- PROVIDER SHIZUKU -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:multiprocess="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
     </application>
 </manifest>
