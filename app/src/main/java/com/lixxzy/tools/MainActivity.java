@@ -1,65 +1,57 @@
 package com.lixxzy.tools;
 
+import android.Manifest;
 import android.content.Intent;
-import android.content.SharedPreferences;
-import android.net.Uri;
+import android.content.pm.PackageManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.widget.Button;
 import android.widget.Switch;
 import android.widget.Toast;
-import androidx.activity.result.ActivityResultLauncher;
-import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
-import androidx.documentfile.provider.DocumentFile;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.lang.reflect.Method;
+
+import rikka.shizuku.Shizuku;
 
 public class MainActivity extends AppCompatActivity {
 
     private Switch switchTools;
     private boolean isToolsOn = false;
-    private String pendingGame = ""; 
     
-    // Folder di dalam APK tempat lo naruh file mod
+    // Nama folder di dalam APK
     private final String ASSET_FOLDER = "mod_files"; 
-    private SharedPreferences prefs;
-
-    // Folder Picker (SAF) buat minta izin akses folder FF
-    private final ActivityResultLauncher<Intent> folderPicker = registerForActivityResult(
-            new ActivityResultContracts.StartActivityForResult(),
-            result -> {
-                if (result.getResultCode() == RESULT_OK && result.getData() != null) {
-                    Uri treeUri = result.getData().getData();
-                    
-                    // Simpan izin permanen biar nggak nanya lagi
-                    getContentResolver().takePersistableUriPermission(treeUri, Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-                    
-                    // Simpan URI folder files/ ke memori
-                    if (pendingGame.equals("TH")) {
-                        prefs.edit().putString("uri_ffth", treeUri.toString()).apply();
-                    } else {
-                        prefs.edit().putString("uri_ffmax", treeUri.toString()).apply();
-                    }
-                    
-                    // Eksekusi Inject File
-                    injectFiles(pendingGame, treeUri);
-                } else {
-                    Toast.makeText(this, "Izin folder dibutuhkan untuk Inject!", Toast.LENGTH_SHORT).show();
-                }
-            }
-    );
+    
+    // TARGET OTOMATIS
+    private final String TARGET_TH = "/storage/emulated/0/Android/data/com.dts.freefireth/files/";
+    private final String TARGET_MAX = "/storage/emulated/0/Android/data/com.dts.freefiremax/files/";
+    
+    private static final int SHIZUKU_CODE = 100;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        prefs = getSharedPreferences("LixxzyPrefs", MODE_PRIVATE);
         switchTools = findViewById(R.id.switchTools);
         Button btnFF = findViewById(R.id.btnFF);
         Button btnFFMax = findViewById(R.id.btnFFMax);
 
+        // Minta izin storage standar
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+                ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, 1);
+            }
+        }
+
+        // Logika Toggle ON / OFF
         switchTools.setOnCheckedChangeListener((buttonView, isChecked) -> {
             isToolsOn = isChecked;
             if (isChecked) {
@@ -68,119 +60,149 @@ public class MainActivity extends AppCompatActivity {
             } else {
                 switchTools.setText("Lixxzy Tools : OFF");
                 switchTools.setTextColor(0xFFFF0033);
-                removeFiles();
+                if (checkShizuku()) {
+                    removeFiles();
+                }
             }
         });
 
+        // Tombol FF TH
         btnFF.setOnClickListener(v -> {
-            if (!isToolsOn) {
-                Toast.makeText(this, "Nyalakan Lixxzy Tools dulu!", Toast.LENGTH_SHORT).show();
-                return;
-            }
-            pendingGame = "TH";
-            checkAndStart("TH", "com.dts.freefireth");
+            if (!isToolsOn) { showToast("Nyalakan Tools dulu!"); return; }
+            if (!checkShizuku()) { requestShizuku(); return; }
+            injectFiles("com.dts.freefireth", TARGET_TH);
         });
 
+        // Tombol FF MAX
         btnFFMax.setOnClickListener(v -> {
-            if (!isToolsOn) {
-                Toast.makeText(this, "Nyalakan Lixxzy Tools dulu!", Toast.LENGTH_SHORT).show();
-                return;
-            }
-            pendingGame = "MAX";
-            checkAndStart("MAX", "com.dts.freefiremax");
+            if (!isToolsOn) { showToast("Nyalakan Tools dulu!"); return; }
+            if (!checkShizuku()) { requestShizuku(); return; }
+            injectFiles("com.dts.freefiremax", TARGET_MAX);
         });
     }
 
-    private void checkAndStart(String game, String pkgName) {
-        String savedUri = prefs.getString(game.equals("TH") ? "uri_ffth" : "uri_ffmax", null);
-        
-        if (savedUri != null) {
-            // Kalau udah pernah dikasih izin, langsung eksekusi
-            injectFiles(game, Uri.parse(savedUri));
-        } else {
-            // Kalau belum, buka File Picker biar user nunjuk foldernya
-            Toast.makeText(this, "Pilih folder 'files' di Android/data/" + pkgName + "/", Toast.LENGTH_LONG).show();
-            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
-            intent.putExtra("android.content.extra.SHOW_ADVANCED", true);
-            folderPicker.launch(intent);
-        }
-    }
-
-    private void injectFiles(String game, Uri targetUri) {
-        Toast.makeText(this, "Meng-ekstrak file...", Toast.LENGTH_SHORT).show();
+    private void injectFiles(String pkgName, String targetDir) {
+        showToast("Memproses file...");
         
         new Thread(() -> {
             try {
-                DocumentFile dir = DocumentFile.fromTreeUri(this, targetUri);
+                // 1. Ekstrak dari dalam APK ke folder Cache Aplikasi dulu
+                File cacheDir = new File(getExternalFilesDir(null), "mod_temp");
+                if (!cacheDir.exists()) cacheDir.mkdirs();
+
                 String[] files = getAssets().list(ASSET_FOLDER);
-                
                 if (files == null || files.length == 0) {
-                    runOnUiThread(() -> Toast.makeText(this, "File di dalam APK kosong!", Toast.LENGTH_LONG).show());
+                    runOnUiThread(() -> showToast("File di dalam APK kosong!"));
                     return;
                 }
 
                 for (String file : files) {
-                    DocumentFile newFile = dir.createFile("application/octet-stream", file);
-                    if (newFile != null) {
-                        InputStream in = getAssets().open(ASSET_FOLDER + "/" + file);
-                        OutputStream out = getContentResolver().openOutputStream(newFile.getUri());
-                        byte[] buffer = new byte[8192];
-                        int read;
-                        while ((read = in.read(buffer)) != -1) {
-                            out.write(buffer, 0, read);
-                        }
-                        in.close();
-                        out.close();
+                    InputStream in = getAssets().open(ASSET_FOLDER + "/" + file);
+                    OutputStream out = new FileOutputStream(new File(cacheDir, file));
+                    byte[] buffer = new byte[8192];
+                    int read;
+                    while ((read = in.read(buffer)) != -1) {
+                        out.write(buffer, 0, read);
                     }
+                    in.close();
+                    out.close();
                 }
 
-                String pkg = game.equals("TH") ? "com.dts.freefireth" : "com.dts.freefiremax";
+                // 2. Tembak perintah Shell via Shizuku buat mindahin ke folder files/
+                String cmd = "mkdir -p " + targetDir + " && cp -r " + cacheDir.getAbsolutePath() + "/* " + targetDir;
+                executeShizukuCmd(cmd);
+
+                // 3. Bersihkan Cache
+                File[] tempFiles = cacheDir.listFiles();
+                if (tempFiles != null) {
+                    for (File f : tempFiles) f.delete();
+                }
+                cacheDir.delete();
+
+                // 4. Buka Game
                 runOnUiThread(() -> {
-                    Toast.makeText(MainActivity.this, "Mod Aktif! Membuka Game...", Toast.LENGTH_SHORT).show();
-                    Intent launchIntent = getPackageManager().getLaunchIntentForPackage(pkg);
+                    showToast("Tools Aktif! Membuka Game...");
+                    Intent launchIntent = getPackageManager().getLaunchIntentForPackage(pkgName);
                     if (launchIntent != null) startActivity(launchIntent);
                 });
 
             } catch (Exception e) {
-                runOnUiThread(() -> Toast.makeText(this, "Gagal: " + e.getMessage(), Toast.LENGTH_LONG).show());
+                runOnUiThread(() -> showToast("Gagal: " + e.getMessage()));
             }
         }).start();
     }
 
     private void removeFiles() {
-        Toast.makeText(this, "Menghapus file mod...", Toast.LENGTH_SHORT).show();
+        showToast("Menghapus file mod...");
         new Thread(() -> {
             try {
                 String[] files = getAssets().list(ASSET_FOLDER);
-                
-                // Hapus dari folder files/ FF TH
-                String uriTH = prefs.getString("uri_ffth", null);
-                if (uriTH != null && files != null) {
-                    DocumentFile dir = DocumentFile.fromTreeUri(this, Uri.parse(uriTH));
-                    if (dir != null) {
-                        for (String file : files) {
-                            DocumentFile f = dir.findFile(file);
-                            if (f != null) f.delete();
-                        }
+                if (files != null && files.length > 0) {
+                    StringBuilder cmd = new StringBuilder();
+                    // Hapus HANYA file yang namanya persis sama dengan di dalam APK
+                    for (String file : files) {
+                        cmd.append("rm -f ").append(TARGET_TH).append(file).append("; ");
+                        cmd.append("rm -f ").append(TARGET_MAX).append(file).append("; ");
                     }
+                    executeShizukuCmd(cmd.toString());
+                    runOnUiThread(() -> showToast("File Delete"));
                 }
-
-                // Hapus dari folder files/ FF MAX
-                String uriMAX = prefs.getString("uri_ffmax", null);
-                if (uriMAX != null && files != null) {
-                    DocumentFile dir = DocumentFile.fromTreeUri(this, Uri.parse(uriMAX));
-                    if (dir != null) {
-                        for (String file : files) {
-                            DocumentFile f = dir.findFile(file);
-                            if (f != null) f.delete();
-                        }
-                    }
-                }
-                
-                runOnUiThread(() -> Toast.makeText(this, "File Mod Dihapus, Game Kembali Normal", Toast.LENGTH_SHORT).show());
             } catch (Exception e) {
-                runOnUiThread(() -> Toast.makeText(this, "Gagal Hapus: " + e.getMessage(), Toast.LENGTH_SHORT).show());
+                runOnUiThread(() -> showToast("Gagal Hapus: " + e.getMessage()));
             }
         }).start();
     }
-}
+
+    // ==========================================
+    // BAGIAN SHIZUKU
+    // ==========================================
+    private boolean checkShizuku() {
+        if (Shizuku.isPreV11()) return false;
+        return Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void requestShizuku() {
+        if (Shizuku.shouldShowRequestPermissionRationale()) {
+            showToast("Izin Shizuku ditolak permanen. Buka app Shizuku.");
+        } else {
+            Shizuku.requestPermission(SHIZUKU_CODE);
+        }
+    }
+
+    private void executeShizukuCmd(String command) {
+        try {
+            Method method = Shizuku.class.getDeclaredMethod("newProcess", String[].class, String[].class, String.class);
+            method.setAccessible(true);
+            Process process = (Process) method.invoke(null, new String[]{"sh", "-c", command}, null, null);
+            process.waitFor(); 
+        } catch (Exception e) {
+            runOnUiThread(() -> showToast("Shizuku CMD Error: " + e.getMessage()));
+        }
+    }
+
+    private final Shizuku.OnRequestPermissionResultListener REQUEST_PERMISSION_LISTENER = (requestCode, grantResult) -> {
+        if (requestCode == SHIZUKU_CODE) {
+            if (grantResult == PackageManager.PERMISSION_GRANTED) {
+                showToast("Shizuku Diizinkan! Klik START lagi.");
+            } else {
+                showToast("Izin Shizuku ditolak!");
+            }
+        }
+    };
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        Shizuku.addRequestPermissionResultListener(REQUEST_PERMISSION_LISTENER);
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        Shizuku.removeRequestPermissionResultListener(REQUEST_PERMISSION_LISTENER);
+    }
+
+    private void showToast(String msg) {
+        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show();
+    }
+            }
